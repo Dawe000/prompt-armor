@@ -1,4 +1,4 @@
-"""Core data models for prompt-shield analysis results."""
+"""Core data models for prompt-armor analysis results."""
 
 from __future__ import annotations
 

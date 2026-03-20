@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 try:
-    from prompt_shield.layers.l3_similarity import L3SimilarityLayer
+    from prompt_armor.layers.l3_similarity import L3SimilarityLayer
 
     HAS_ML = True
 except ImportError:
@@ -16,8 +16,8 @@ pytestmark = pytest.mark.skipif(not HAS_ML, reason="ML dependencies not installe
 
 @pytest.fixture(scope="module")
 def l3() -> L3SimilarityLayer:
-    from prompt_shield.config import ShieldConfig
-    from prompt_shield.layers.l3_similarity import L3SimilarityLayer
+    from prompt_armor.config import ShieldConfig
+    from prompt_armor.layers.l3_similarity import L3SimilarityLayer
 
     layer = L3SimilarityLayer(ShieldConfig())
     layer.setup()

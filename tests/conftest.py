@@ -1,10 +1,10 @@
-"""Shared test fixtures for prompt-shield."""
+"""Shared test fixtures for prompt-armor."""
 
 from __future__ import annotations
 
 import pytest
 
-from prompt_shield.config import ShieldConfig
+from prompt_armor.config import ShieldConfig
 
 
 @pytest.fixture(scope="session")

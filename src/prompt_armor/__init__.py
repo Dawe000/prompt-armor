@@ -1,13 +1,13 @@
-"""prompt-shield — Open-core LLM prompt security analysis."""
+"""prompt-armor — Open-core LLM prompt security analysis."""
 
 from __future__ import annotations
 
 import threading
 
-from prompt_shield._version import __version__
-from prompt_shield.config import ShieldConfig
-from prompt_shield.engine import LiteEngine
-from prompt_shield.models import Category, Decision, Evidence, LayerResult, ShieldResult
+from prompt_armor._version import __version__
+from prompt_armor.config import ShieldConfig
+from prompt_armor.engine import LiteEngine
+from prompt_armor.models import Category, Decision, Evidence, LayerResult, ShieldResult
 
 __all__ = [
     "__version__",

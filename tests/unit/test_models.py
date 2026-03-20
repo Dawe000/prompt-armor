@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from prompt_shield.models import (
+from prompt_armor.models import (
     Category,
     Decision,
     Evidence,
