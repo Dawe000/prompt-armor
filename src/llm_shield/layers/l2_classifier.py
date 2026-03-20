@@ -234,9 +234,9 @@ class L2ClassifierLayer(BaseLayer):
         # Scout-22m outputs ~0.23 for benign and ~0.78 for attacks.
         # Without calibration, the fusion layer sees compressed scores that
         # underweight L2 relative to L1/L3/L4 which use the full 0-1 range.
-        _FLOOR = 0.23  # typical benign score
-        _CEIL = 0.78   # typical attack score
-        calibrated = (raw_prob - _FLOOR) / (_CEIL - _FLOOR)
+        score_floor = 0.23  # typical benign score
+        score_ceil = 0.78   # typical attack score
+        calibrated = (raw_prob - score_floor) / (score_ceil - score_floor)
         calibrated = max(0.0, min(1.0, calibrated))
 
         # Evidence threshold on calibrated score

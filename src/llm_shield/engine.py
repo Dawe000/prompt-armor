@@ -40,6 +40,7 @@ def _build_layers(config: ShieldConfig) -> list[BaseLayer]:
     try:
         import faiss  # noqa: F401
         import sentence_transformers  # noqa: F401
+
         from llm_shield.layers.l3_similarity import L3SimilarityLayer
 
         layers.append(L3SimilarityLayer(config))
@@ -49,6 +50,7 @@ def _build_layers(config: ShieldConfig) -> list[BaseLayer]:
     # Try to load L2 (requires onnxruntime)
     try:
         import onnxruntime  # noqa: F401
+
         from llm_shield.layers.l2_classifier import L2ClassifierLayer
 
         layers.append(L2ClassifierLayer(config))

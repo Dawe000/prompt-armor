@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from llm_shield.models import Category
-
 try:
     from llm_shield.layers.l3_similarity import L3SimilarityLayer
 
