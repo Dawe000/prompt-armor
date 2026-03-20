@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import functools
 import io
 import logging
 import os
@@ -28,18 +29,17 @@ mcp = FastMCP(
 )
 
 
+@functools.lru_cache(maxsize=1)
 def _get_engine():
-    """Lazy-load the analysis engine."""
+    """Lazy-load the analysis engine. Thread-safe via lru_cache."""
     from llm_shield.engine import LiteEngine
 
-    if not hasattr(_get_engine, "_engine"):
-        old_stdout = sys.stdout
-        sys.stdout = io.StringIO()
-        try:
-            _get_engine._engine = LiteEngine()
-        finally:
-            sys.stdout = old_stdout
-    return _get_engine._engine
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        return LiteEngine()
+    finally:
+        sys.stdout = old_stdout
 
 
 @mcp.tool()
@@ -54,25 +54,7 @@ def analyze_prompt(prompt: str) -> dict:
     """
     engine = _get_engine()
     result = engine.analyze(prompt)
-
-    return {
-        "risk_score": result.risk_score,
-        "confidence": result.confidence,
-        "decision": result.decision.value,
-        "categories": [c.value for c in result.categories],
-        "evidence": [
-            {
-                "layer": e.layer,
-                "category": e.category.value,
-                "description": e.description,
-                "score": e.score,
-            }
-            for e in result.evidence
-        ],
-        "needs_council": result.needs_council,
-        "latency_ms": result.latency_ms,
-        "cost_usd": result.cost_usd,
-    }
+    return result.to_dict()
 
 
 def main() -> None:
