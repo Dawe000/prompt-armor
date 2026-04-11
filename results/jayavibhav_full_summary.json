@@ -1,0 +1,189 @@
+{
+  "dataset": "data/external/jayavibhav_prompt_injection.jsonl",
+  "n_samples": 327153,
+  "layer_threshold": 0.5,
+  "fused_threshold": 0.5,
+  "timing": {
+    "engine_init_seconds": 3.402,
+    "n_analyzed": 327153,
+    "mean_analyze_ms": 67.64,
+    "min_analyze_ms": 11.98,
+    "max_analyze_ms": 5041.21,
+    "p50_analyze_ms": 53.36,
+    "first_sample_analyze_ms": 75.41,
+    "total_analyze_seconds": 22127.612
+  },
+  "layers": {
+    "l1_regex": {
+      "layer": "l1_regex",
+      "threshold": 0.5,
+      "tp": 7446,
+      "tn": 165301,
+      "fp": 326,
+      "fn": 154080,
+      "accuracy": 0.528,
+      "precision": 0.9581,
+      "recall": 0.0461,
+      "f1": 0.088
+    },
+    "l2_classifier": {
+      "layer": "l2_classifier",
+      "threshold": 0.5,
+      "tp": 85016,
+      "tn": 134937,
+      "fp": 30690,
+      "fn": 76510,
+      "accuracy": 0.6723,
+      "precision": 0.7348,
+      "recall": 0.5263,
+      "f1": 0.6133
+    },
+    "l3_similarity": {
+      "layer": "l3_similarity",
+      "threshold": 0.5,
+      "tp": 161006,
+      "tn": 9415,
+      "fp": 156212,
+      "fn": 520,
+      "accuracy": 0.5209,
+      "precision": 0.5076,
+      "recall": 0.9968,
+      "f1": 0.6726
+    },
+    "l4_structural": {
+      "layer": "l4_structural",
+      "threshold": 0.5,
+      "tp": 4382,
+      "tn": 163795,
+      "fp": 1832,
+      "fn": 157144,
+      "accuracy": 0.5141,
+      "precision": 0.7052,
+      "recall": 0.0271,
+      "f1": 0.0522
+    },
+    "l5_negative_selection": {
+      "layer": "l5_negative_selection",
+      "threshold": 0.5,
+      "tp": 9150,
+      "tn": 155479,
+      "fp": 10148,
+      "fn": 152376,
+      "accuracy": 0.5032,
+      "precision": 0.4741,
+      "recall": 0.0566,
+      "f1": 0.1012
+    }
+  },
+  "fused": {
+    "layer": "fused_meta",
+    "threshold": 0.5,
+    "tp": 158036,
+    "tn": 39048,
+    "fp": 126579,
+    "fn": 3490,
+    "accuracy": 0.6024,
+    "precision": 0.5553,
+    "recall": 0.9784,
+    "f1": 0.7085
+  },
+  "disagreement": {
+    "pairwise_pred_disagreements": {
+      "fused": {
+        "l3_similarity": 34131,
+        "l1_regex": 276859,
+        "l2_classifier": 169151,
+        "l4_structural": 279001,
+        "l5_negative_selection": 265503
+      },
+      "l3_similarity": {
+        "fused": 34131,
+        "l1_regex": 309488,
+        "l2_classifier": 202248,
+        "l4_structural": 311394,
+        "l5_negative_selection": 298124
+      },
+      "l1_regex": {
+        "l3_similarity": 309488,
+        "fused": 276859,
+        "l2_classifier": 111778,
+        "l4_structural": 12966,
+        "l5_negative_selection": 26334
+      },
+      "l2_classifier": {
+        "l3_similarity": 202248,
+        "fused": 169151,
+        "l1_regex": 111778,
+        "l4_structural": 115936,
+        "l5_negative_selection": 110978
+      },
+      "l4_structural": {
+        "l3_similarity": 311394,
+        "fused": 279001,
+        "l2_classifier": 115936,
+        "l1_regex": 12966,
+        "l5_negative_selection": 24158
+      },
+      "l5_negative_selection": {
+        "l3_similarity": 298124,
+        "fused": 265503,
+        "l2_classifier": 110978,
+        "l4_structural": 24158,
+        "l1_regex": 26334
+      }
+    },
+    "pairwise_percent_agreement": {
+      "fused|l1_regex": 0.1537,
+      "fused|l2_classifier": 0.483,
+      "fused|l3_similarity": 0.8957,
+      "fused|l4_structural": 0.1472,
+      "fused|l5_negative_selection": 0.1884,
+      "l1_regex|l2_classifier": 0.6583,
+      "l1_regex|l3_similarity": 0.054,
+      "l1_regex|l4_structural": 0.9604,
+      "l1_regex|l5_negative_selection": 0.9195,
+      "l2_classifier|l3_similarity": 0.3818,
+      "l2_classifier|l4_structural": 0.6456,
+      "l2_classifier|l5_negative_selection": 0.6608,
+      "l3_similarity|l4_structural": 0.0482,
+      "l3_similarity|l5_negative_selection": 0.0887,
+      "l4_structural|l5_negative_selection": 0.9262
+    },
+    "pairwise_cohens_kappa": {
+      "fused|l1_regex": 0.0072,
+      "fused|l2_classifier": 0.15,
+      "fused|l3_similarity": 0.3159,
+      "fused|l4_structural": 0.0036,
+      "fused|l5_negative_selection": 0.0179,
+      "l1_regex|l2_classifier": 0.0526,
+      "l1_regex|l3_similarity": 0.0014,
+      "l1_regex|l4_structural": 0.0529,
+      "l1_regex|l5_negative_selection": -0.0069,
+      "l2_classifier|l3_similarity": 0.0302,
+      "l2_classifier|l4_structural": 0.0135,
+      "l2_classifier|l5_negative_selection": 0.0855,
+      "l3_similarity|l4_structural": -0.0,
+      "l3_similarity|l5_negative_selection": 0.0032,
+      "l4_structural|l5_negative_selection": 0.0251
+    },
+    "attacks_total": 161526,
+    "benign_total": 165627,
+    "false_negatives_on_attacks_by_layer": {
+      "l1_regex": 154080,
+      "l2_classifier": 76510,
+      "l3_similarity": 520,
+      "l4_structural": 157144,
+      "l5_negative_selection": 152376
+    },
+    "false_negatives_on_attacks_fused": 3490,
+    "false_positives_on_benign_by_layer": {
+      "l1_regex": 326,
+      "l2_classifier": 30690,
+      "l3_similarity": 156212,
+      "l4_structural": 1832,
+      "l5_negative_selection": 10148
+    },
+    "false_positives_on_benign_fused": 126579,
+    "samples_evaluated": 327153
+  }
+}

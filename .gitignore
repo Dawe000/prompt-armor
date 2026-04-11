@@ -42,7 +42,11 @@ src/prompt_armor/data/models/*.npy
 src/prompt_armor/data/models/*.json
 src/prompt_armor/data/models/l3-contrastive/
 src/prompt_armor/data/models/l3-contrastive-onnx/
+src/prompt_armor/data/models/l3-faiss-cache/
 !src/prompt_armor/data/models/.gitkeep
+
+# Local HF eval exports (large; run scripts/preload_eval_datasets.py)
+data/external/*.jsonl
 
 # Script outputs (generated, not tracked)
 scripts/*.json

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -31,9 +32,52 @@ _ONNX_MODEL_PATH = Path(__file__).parent.parent / "data" / "models" / "l3-contra
 _CONTRASTIVE_MODEL_PATH = Path(__file__).parent.parent / "data" / "models" / "l3-contrastive"
 _DEFAULT_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
 
+# On-disk FAISS + metadata cache (skip re-encoding ~25k attacks on every process start)
+_CACHE_VERSION = 1
+_CACHE_DISABLE_ENV = "PROMPT_ARMOR_DISABLE_L3_INDEX_CACHE"
+_CACHE_DIR_ENV = "PROMPT_ARMOR_L3_CACHE_DIR"
+_CACHE_DIR_FALLBACK = Path(__file__).resolve().parent.parent / "data" / "models" / "l3-faiss-cache"
+
 # Similarity thresholds
 _HIGH_SIMILARITY = 0.75
 _MEDIUM_SIMILARITY = 0.55
+
+
+def _l3_cache_base_dir() -> Path:
+    override = os.environ.get(_CACHE_DIR_ENV)
+    if override:
+        return Path(override).expanduser().resolve()
+    return _CACHE_DIR_FALLBACK
+
+
+def _file_sig(path: Path) -> dict[str, int] | None:
+    if not path.is_file():
+        return None
+    st = path.stat()
+    return {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+
+
+def _attacks_file_sig(path: Path) -> dict[str, int | str]:
+    p = path.resolve()
+    st = p.stat()
+    return {"path": str(p), "mtime_ns": st.st_mtime_ns, "size": st.st_size}
+
+
+def _build_model_fingerprint(use_onnx: bool) -> dict[str, Any]:
+    if use_onnx:
+        m = _ONNX_MODEL_PATH / "model_quant.onnx"
+        t = _ONNX_MODEL_PATH / "tokenizer.json"
+        ms, ts = _file_sig(m), _file_sig(t)
+        return {"kind": "onnx", "model": ms, "tokenizer": ts}
+    p = _CONTRASTIVE_MODEL_PATH
+    if p.exists():
+        pr = p.resolve()
+        if pr.is_file():
+            sig = _file_sig(pr)
+            return {"kind": "st_local_file", "path": str(pr), "file": sig}
+        st = pr.stat()
+        return {"kind": "st_local_dir", "path": str(pr), "mtime_ns": st.st_mtime_ns, "size": st.st_size}
+    return {"kind": "st_hf", "name": _DEFAULT_MODEL_NAME}
 
 
 class L3SimilarityLayer(BaseLayer):
@@ -100,19 +144,112 @@ class L3SimilarityLayer(BaseLayer):
         outputs = self._onnx_session.run(None, {"input_ids": input_ids, "attention_mask": attention_mask})
         return self._mean_pool(outputs[0], attention_mask)
 
-    def setup(self) -> None:
-        """Load embedding model, build FAISS index from attack database."""
-        import os
+    def _cache_disabled(self) -> bool:
+        return os.environ.get(_CACHE_DISABLE_ENV, "").strip().lower() in ("1", "true", "yes")
 
+    def _try_load_cached_index(self, faiss_mod: Any, attacks_sig: dict[str, Any], model_fp: dict[str, Any]) -> bool:
+        if self._cache_disabled():
+            return False
+        base = _l3_cache_base_dir()
+        man_path = base / "manifest.json"
+        idx_path = base / "index.faiss"
+        meta_path = base / "metadata.json"
+        if not (man_path.is_file() and idx_path.is_file() and meta_path.is_file()):
+            return False
+        try:
+            manifest = json.loads(man_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        if manifest.get("cache_version") != _CACHE_VERSION:
+            return False
+        if manifest.get("faiss_version") != faiss_mod.__version__:
+            return False
+        if manifest.get("use_onnx") != self._use_onnx:
+            return False
+        if manifest.get("attacks") != attacks_sig:
+            return False
+        if manifest.get("model_fingerprint") != model_fp:
+            return False
+        n_exp = manifest.get("n_attacks")
+        if not isinstance(n_exp, int) or n_exp < 0:
+            return False
+        try:
+            index = faiss_mod.read_index(str(idx_path))
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as e:
+            logger.warning("L3: cache read failed (%s), rebuilding index", e)
+            return False
+        if getattr(index, "d", None) != 384:
+            return False
+        if not isinstance(metadata, list) or len(metadata) != n_exp or index.ntotal != n_exp:
+            return False
+        self._attack_metadata = [
+            {"category": str(m.get("category", "")), "source": str(m.get("source", "unknown"))} for m in metadata
+        ]
+        if len(self._attack_metadata) != n_exp:
+            return False
+        self._index = index
+        logger.info("L3: loaded FAISS index from cache (%d vectors, %s)", n_exp, base)
+        return True
+
+    def _save_cached_index(
+        self,
+        faiss_mod: Any,
+        attacks_sig: dict[str, Any],
+        model_fp: dict[str, Any],
+        n_attacks: int,
+    ) -> None:
+        if self._cache_disabled() or self._index is None or n_attacks <= 0:
+            return
+        base = _l3_cache_base_dir()
+        try:
+            base.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            logger.warning("L3: could not create cache directory %s: %s", base, e)
+            return
+        manifest: dict[str, Any] = {
+            "cache_version": _CACHE_VERSION,
+            "faiss_version": faiss_mod.__version__,
+            "use_onnx": self._use_onnx,
+            "attacks": attacks_sig,
+            "model_fingerprint": model_fp,
+            "n_attacks": n_attacks,
+            "dim": 384,
+        }
+        idx_path = base / "index.faiss"
+        meta_path = base / "metadata.json"
+        man_path = base / "manifest.json"
+        pid = os.getpid()
+        tmp_idx = base / f"index.faiss.tmp.{pid}"
+        tmp_meta = base / f"metadata.json.tmp.{pid}"
+        tmp_man = base / f"manifest.json.tmp.{pid}"
+        try:
+            faiss_mod.write_index(self._index, str(tmp_idx))
+            os.replace(tmp_idx, idx_path)
+            with open(tmp_meta, "w", encoding="utf-8") as f:
+                json.dump(self._attack_metadata, f, ensure_ascii=False)
+            os.replace(tmp_meta, meta_path)
+            with open(tmp_man, "w", encoding="utf-8") as f:
+                json.dump(manifest, f, indent=2)
+            os.replace(tmp_man, man_path)
+            logger.info("L3: wrote FAISS index cache (%d vectors, %s)", n_attacks, base)
+        except Exception as e:
+            logger.warning("L3: could not write index cache: %s", e)
+            for p in (tmp_idx, tmp_meta, tmp_man):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+    def setup(self) -> None:
+        """Load embedding model, build or load cached FAISS index from attack database."""
         import faiss
 
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-        # Try ONNX first (no torch/sentence-transformers needed)
         onnx_model = _ONNX_MODEL_PATH / "model_quant.onnx"
         onnx_tokenizer = _ONNX_MODEL_PATH / "tokenizer.json"
 
-        # Auto-download from HuggingFace if not present
         if not onnx_model.exists() or not onnx_tokenizer.exists():
             self._download_onnx_model()
 
@@ -127,7 +264,6 @@ class L3SimilarityLayer(BaseLayer):
             self._use_onnx = True
             logger.info("L3: using ONNX model")
         else:
-            # Fallback to SentenceTransformer
             import io
             import sys
 
@@ -146,14 +282,24 @@ class L3SimilarityLayer(BaseLayer):
                     self._st_model = SentenceTransformer(_DEFAULT_MODEL_NAME)
             finally:
                 sys.stdout = old_stdout
+            self._use_onnx = False
             logger.info("L3: using SentenceTransformer fallback")
 
-        # Load attack database
-        attacks_path = self._config.attacks_path or _DEFAULT_ATTACKS_PATH
+        attacks_path = (self._config.attacks_path or _DEFAULT_ATTACKS_PATH).resolve()
+        if not attacks_path.is_file():
+            logger.warning("L3: attacks file not found: %s", attacks_path)
+            self._index = faiss.IndexFlatIP(384)
+            return
+
+        attacks_sig = _attacks_file_sig(attacks_path)
+        model_fp = _build_model_fingerprint(self._use_onnx)
+        if self._try_load_cached_index(faiss, attacks_sig, model_fp):
+            return
+
         texts: list[str] = []
         self._attack_metadata = []
 
-        with open(attacks_path) as f:
+        with open(attacks_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -169,14 +315,12 @@ class L3SimilarityLayer(BaseLayer):
             self._index = faiss.IndexFlatIP(384)
             return
 
-        # Encode all attack texts
         if self._use_onnx:
             embeddings = self._encode_onnx(texts)
         else:
             embeddings = self._st_model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
         embeddings = np.asarray(embeddings, dtype=np.float32)
 
-        # Build FAISS index
         dim = embeddings.shape[1]
         n_vectors = embeddings.shape[0]
 
@@ -190,6 +334,8 @@ class L3SimilarityLayer(BaseLayer):
         else:
             self._index = faiss.IndexFlatIP(dim)
             self._index.add(embeddings)
+
+        self._save_cached_index(faiss, attacks_sig, model_fp, n_vectors)
 
     def analyze(self, text: str) -> LayerResult:
         """Compare prompt against known attacks via cosine similarity."""
