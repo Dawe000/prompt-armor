@@ -150,6 +150,7 @@ class LiteEngine:
 
     def __init__(self, config: ShieldConfig | None = None) -> None:
         self._config = config or load_config()
+        self._layer_timeout_s = float(self._config.layer_timeout_s)
         self._layers = _build_layers(self._config)
         self._pool = ThreadPoolExecutor(max_workers=max(len(self._layers), 1))
         self._inflammation: float = 0.0  # session-level threat awareness
@@ -198,7 +199,7 @@ class LiteEngine:
         for future in futures:
             layer_name = futures[future]
             try:
-                result = future.result(timeout=2.0)
+                result = future.result(timeout=self._layer_timeout_s)
                 layer_results.append(result)
             except FuturesTimeoutError:
                 logger.warning("Layer %s timed out, skipping", layer_name)

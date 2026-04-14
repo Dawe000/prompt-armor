@@ -1,0 +1,63 @@
+{
+  "input": "/home/dawe/Documents/agent0/prompt-armor/runs/jayavibhav_per_sample_with_evidence.jsonl",
+  "n_rows": 327153,
+  "max_rows_applied": 0,
+  "layer_threshold_disagreement": 0.5,
+  "fused_score": {
+    "average_precision_rank": 0.5762907583756093,
+    "best_f1_threshold": 0.66,
+    "best_f1_value": 0.7149571164712982,
+    "min_cost_threshold": 0.49,
+    "min_cost_value": 141792.0,
+    "cost_weights": {
+      "w_fn": 5.0,
+      "w_fp": 1.0
+    },
+    "at_threshold_0.5": {
+      "precision": 0.5552623719761783,
+      "recall": 0.9783935713135966,
+      "f1": 0.7084576400734298,
+      "fp": 126579,
+      "fn": 3490
+    }
+  },
+  "pred_fused_vs_label_accuracy": 0.6024214969754212,
+  "note_pred_fused": "pred_fused uses fused_threshold from eval run (often 0.5); compare to decision for gate behavior.",
+  "layer_stats": {
+    "pair_disagreements": {
+      "l1_regex|l2_classifier": 111778,
+      "l1_regex|l3_similarity": 309488,
+      "l1_regex|l4_structural": 12966,
+      "l1_regex|l5_negative_selection": 26334,
+      "l2_classifier|l3_similarity": 202248,
+      "l2_classifier|l4_structural": 115936,
+      "l2_classifier|l5_negative_selection": 110978,
+      "l3_similarity|l4_structural": 311394,
+      "l3_similarity|l5_negative_selection": 298124,
+      "l4_structural|l5_negative_selection": 24158
+    },
+    "solo_catch_attacks": {
+      "l1_regex": 1,
+      "l2_classifier": 118,
+      "l3_similarity": 71394,
+      "l4_structural": 6,
+      "l5_negative_selection": 17
+    },
+    "layer_recall_at_t": {
+      "l1_regex": 0.04609784183351287,
+      "l2_classifier": 0.5263301264192761,
+      "l3_similarity": 0.9967807040352636,
+      "l4_structural": 0.027128759456681896,
+      "l5_negative_selection": 0.05664722707180268
+    }
+  },
+  "outputs": {
+    "threshold_sweep_fused": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/threshold_sweep_fused.csv",
+    "threshold_sweep_layers": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/threshold_sweep_layers.csv",
+    "decision_vs_label": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/decision_vs_label.csv",
+    "pred_fused_vs_decision": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/pred_fused_vs_decision.csv",
+    "calibration": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/calibration_fused_confidence.csv",
+    "layer_pairs": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/layer_pair_disagreement.json",
+    "fn_fp_by_category": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/jayavibhav_findings_run/fn_fp_by_category_prefix.csv"
+  }
+}

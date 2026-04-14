@@ -20,6 +20,7 @@ class TestShieldConfig:
         assert config.thresholds.allow_below == 0.55
         assert config.thresholds.block_above == 0.7
         assert config.thresholds.hard_block == 0.95
+        assert config.layer_timeout_s == 2.0
         assert config.convergence_boost == 0.10
         assert config.divergence_penalty == 0.15
 

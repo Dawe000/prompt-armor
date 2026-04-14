@@ -48,6 +48,9 @@ src/prompt_armor/data/models/l3-faiss-cache/
 # Local HF eval exports (large; run scripts/preload_eval_datasets.py)
 data/external/*.jsonl
 
+# Per-sample eval JSONL (often 100MB+; GitHub rejects >100MB — keep local only)
+runs/**/*.jsonl
+
 # Script outputs (generated, not tracked)
 scripts/*.json
 

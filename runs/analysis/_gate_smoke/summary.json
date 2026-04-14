@@ -1,0 +1,86 @@
+{
+  "input": "/home/dawe/Documents/agent0/prompt-armor/runs/jayavibhav_per_sample_with_evidence.jsonl",
+  "n_rows": 8000,
+  "max_rows_applied": 8000,
+  "layer_threshold_disagreement": 0.5,
+  "fused_score": {
+    "average_precision_rank": 0.5005670691015663,
+    "best_f1_threshold": 0.97,
+    "best_f1_value": 0.6619795974634685,
+    "min_cost_threshold": 0.97,
+    "min_cost_value": 2600.0,
+    "cost_weights": {
+      "w_fn": 5.0,
+      "w_fp": 1.0
+    },
+    "at_threshold_0.5": {
+      "precision": 0.47826941986234023,
+      "recall": 0.9975389663658737,
+      "f1": 0.6465505782267713,
+      "fp": 2653,
+      "fn": 6
+    }
+  },
+  "pred_fused_vs_label_accuracy": 0.667625,
+  "note_pred_fused": "pred_fused uses fused_threshold from eval run (often 0.5); compare to decision for gate behavior.",
+  "gate_simulation": {
+    "rule": "deterministic: fused_score < allow_cut -> allow; >= block_cut -> block; else warn",
+    "note": "Production fusion._decide uses Gaussian jitter around meta threshold and a hard block split at score>=0.8; YAML allow_below/block_above drive council uncertainty, not this exact three-way. Use the grid for comparative what-if analysis.",
+    "grid_rows": 62,
+    "no_jitter_reference_allow0.5_block0.8": {
+      "allow_cut": 0.5,
+      "block_cut": 0.8,
+      "warn_band_width": 0.3,
+      "pct_allow_all": 0.364375,
+      "pct_warn_all": 0.00925,
+      "pct_block_all": 0.626375,
+      "attack_pct_allow": 0.002461033634126333,
+      "attack_pct_warn": 0.0061525840853158325,
+      "attack_pct_block": 0.9913863822805579,
+      "benign_pct_allow": 0.5230133045667026,
+      "benign_pct_warn": 0.010607695073714491,
+      "benign_pct_block": 0.4663790003595829,
+      "attacks_allowed_n": 6,
+      "benign_blocked_n": 2594
+    },
+    "csv": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/gate_threshold_grid.csv"
+  },
+  "layer_stats": {
+    "pair_disagreements": {
+      "l1_regex|l2_classifier": 1894,
+      "l1_regex|l3_similarity": 5921,
+      "l1_regex|l4_structural": 858,
+      "l1_regex|l5_negative_selection": 641,
+      "l2_classifier|l3_similarity": 4057,
+      "l2_classifier|l4_structural": 2444,
+      "l2_classifier|l5_negative_selection": 2385,
+      "l3_similarity|l4_structural": 5957,
+      "l3_similarity|l5_negative_selection": 6242,
+      "l4_structural|l5_negative_selection": 647
+    },
+    "solo_catch_attacks": {
+      "l1_regex": 0,
+      "l2_classifier": 3,
+      "l3_similarity": 26,
+      "l4_structural": 0,
+      "l5_negative_selection": 0
+    },
+    "layer_recall_at_t": {
+      "l1_regex": 0.21944216570959804,
+      "l2_classifier": 0.9864643150123051,
+      "l3_similarity": 0.9979491386382281,
+      "l4_structural": 0.11320754716981132,
+      "l5_negative_selection": 0.06357670221493027
+    }
+  },
+  "outputs": {
+    "threshold_sweep_fused": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/threshold_sweep_fused.csv",
+    "threshold_sweep_layers": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/threshold_sweep_layers.csv",
+    "decision_vs_label": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/decision_vs_label.csv",
+    "pred_fused_vs_decision": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/pred_fused_vs_decision.csv",
+    "calibration": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/calibration_fused_confidence.csv",
+    "layer_pairs": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/layer_pair_disagreement.json",
+    "fn_fp_by_category": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/fn_fp_by_category_prefix.csv",
+    "gate_threshold_grid": "/home/dawe/Documents/agent0/prompt-armor/runs/analysis/_gate_smoke/gate_threshold_grid.csv"
+  }
+}

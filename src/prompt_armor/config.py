@@ -61,6 +61,12 @@ class ShieldConfig(BaseModel):
 
     weights: LayerWeights = Field(default_factory=LayerWeights)
     thresholds: ThresholdConfig = Field(default_factory=ThresholdConfig)
+    layer_timeout_s: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=120.0,
+        description="Wall-clock cap per layer inside analyze() (fail-open). Raise under heavy CPU load.",
+    )
     convergence_boost: float = Field(default=0.10, ge=0.0, le=1.0)
     divergence_penalty: float = Field(default=0.15, ge=0.0, le=1.0)
     rules_path: Path | None = None

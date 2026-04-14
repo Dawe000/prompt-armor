@@ -1,0 +1,7 @@
+decision,label,count
+allow,0,2821
+allow,1,7
+block,0,2594
+block,1,2417
+warn,0,147
+warn,1,14

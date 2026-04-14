@@ -26,6 +26,14 @@ For **jayavibhav/prompt-injection**, run ``scripts/preload_eval_datasets.py`` (w
 For **hundreds of thousands** of JSONL rows, use ``--stream-jsonl`` so lines are read one at a time
 (RAM stays ~O(1) in sample count). Omit ``--per-sample`` unless you need a huge scores file.
 
+``--per-sample`` JSONL includes fused ``decision`` (allow/warn/block), ``fused_confidence``, per-layer
+scores/confidences/latencies/categories, ``shield_categories``, ``n_evidence``, and ``line_idx`` (stream mode).
+Add ``--per-sample-include-evidence`` for full evidence lists (much larger files).
+
+With ``--stream-jsonl``, ``--workers N`` (N>1) runs **N processes**, each with its own ``LiteEngine`` (higher RAM,
+faster wall-clock on multi-core). Use ``--chunk-lines`` to tune batch size (default 400). ONNX (L2) can miss the
+default 2s per-layer timeout under CPU contention; use ``--layer-timeout-s 10`` (or similar) when ``--workers`` is high.
+
 Usage:
     pip install -e ".[dev,ml,mcp]"
     .venv/bin/python scripts/eval_pint_layers.py --dataset /path/to/pint.yaml
@@ -92,6 +100,143 @@ class LayerMetrics:
     def f1(self) -> float:
         p, r = self.precision, self.recall
         return 2 * p * r / (p + r) if p + r else 0.0
+
+
+def _build_per_sample_row(
+    line_idx: int | None,
+    label: int,
+    category: str,
+    result: object,
+    layer_threshold: float,
+    fused_threshold: float,
+    include_evidence: bool,
+) -> dict:
+    """Serialize one analyze() result for JSONL (rich fields for offline analysis)."""
+    from prompt_armor.models import Evidence, LayerResult, ShieldResult
+
+    assert isinstance(result, ShieldResult)
+    fused_score = float(result.risk_score)
+    pred_fused = 1 if fused_score >= fused_threshold else 0
+
+    row: dict = {
+        "label": label,
+        "category": category,
+        "fused_score": round(fused_score, 4),
+        "fused_confidence": round(float(result.confidence), 4),
+        "decision": result.decision.value,
+        "needs_council": bool(result.needs_council),
+        "shield_latency_ms": round(float(result.latency_ms), 2),
+        "pred_fused": pred_fused,
+        "shield_categories": [c.value for c in result.categories],
+        "n_evidence": len(result.evidence),
+    }
+    if line_idx is not None:
+        row["line_idx"] = line_idx
+    if include_evidence:
+        ev_out: list[dict] = []
+        for e in result.evidence:
+            assert isinstance(e, Evidence)
+            ev_out.append(
+                {
+                    "layer": e.layer,
+                    "category": e.category.value,
+                    "description": e.description,
+                    "score": round(float(e.score), 4),
+                    "span": [e.span[0], e.span[1]] if e.span is not None else None,
+                }
+            )
+        row["evidence"] = ev_out
+
+    for lk in LAYER_KEYS:
+        lr = next((x for x in result.layer_results if x.layer == lk), None)
+        sc = float(lr.score) if lr is not None else 0.0
+        pred = 1 if sc >= layer_threshold else 0
+        row[lk] = round(sc, 4)
+        row[f"pred_{lk}"] = pred
+        if lr is not None:
+            assert isinstance(lr, LayerResult)
+            row[f"{lk}_confidence"] = round(float(lr.confidence), 4)
+            row[f"{lk}_latency_ms"] = round(float(lr.latency_ms), 2)
+            row[f"{lk}_categories"] = [c.value for c in lr.categories]
+        else:
+            row[f"{lk}_confidence"] = 0.0
+            row[f"{lk}_latency_ms"] = 0.0
+            row[f"{lk}_categories"] = []
+    return row
+
+
+def _update_metrics_for_row(
+    layer_m: dict[str, LayerMetrics],
+    fused_m: LayerMetrics,
+    y: int,
+    preds: dict[str, int],
+) -> None:
+    """Update TP/TN/FP/FN for fused + each layer from binary preds."""
+    pf = preds["fused"]
+    if y == 1 and pf == 1:
+        fused_m.tp += 1
+    elif y == 0 and pf == 0:
+        fused_m.tn += 1
+    elif y == 0 and pf == 1:
+        fused_m.fp += 1
+    else:
+        fused_m.fn += 1
+
+    for lk in LAYER_KEYS:
+        p = preds[lk]
+        m = layer_m[lk]
+        if y == 1 and p == 1:
+            m.tp += 1
+        elif y == 0 and p == 0:
+            m.tn += 1
+        elif y == 0 and p == 1:
+            m.fp += 1
+        else:
+            m.fn += 1
+
+
+def _update_disagreement_for_row(
+    diff_matrix: defaultdict,
+    pair_cells: defaultdict,
+    fn_by_layer: dict[str, int],
+    fp_by_layer: dict[str, int],
+    fn_fused: list[int],
+    fp_fused: list[int],
+    attacks_total: list[int],
+    benign_total: list[int],
+    y: int,
+    preds: dict[str, int],
+) -> None:
+    """Single-sample contribution to disagreement + FN/FP hints (mutable int boxes for fused totals)."""
+    if y == 1:
+        attacks_total[0] += 1
+        for k in LAYER_KEYS:
+            if preds[k] == 0:
+                fn_by_layer[k] += 1
+        if preds["fused"] == 0:
+            fn_fused[0] += 1
+    else:
+        benign_total[0] += 1
+        for k in LAYER_KEYS:
+            if preds[k] == 1:
+                fp_by_layer[k] += 1
+        if preds["fused"] == 1:
+            fp_fused[0] += 1
+
+    keys_list = list(preds.keys())
+    for i, a in enumerate(keys_list):
+        for b in keys_list[i + 1 :]:
+            if preds[a] != preds[b]:
+                diff_matrix[a][b] += 1
+                diff_matrix[b][a] += 1
+            na, nb = sorted((a, b))
+            pair_cells[(na, nb)][(preds[na], preds[nb])] += 1
+
+
+def _preds_from_row_dict(row: dict) -> dict[str, int]:
+    out = {k: int(row[f"pred_{k}"]) for k in LAYER_KEYS}
+    out["fused"] = int(row["pred_fused"])
+    return out
 
 
 def _normalize_label(raw: object) -> int | None:
@@ -261,15 +406,20 @@ def run_evaluation(
     layer_threshold: float,
     fused_threshold: float,
     progress_every: int = 10,
+    include_evidence: bool = False,
+    layer_timeout_s: float = 2.0,
 ) -> tuple[dict[str, LayerMetrics], LayerMetrics, list[dict], dict]:
     sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+    from prompt_armor.config import load_config
     from prompt_armor.engine import LiteEngine
+
+    shield_cfg = load_config().model_copy(update={"layer_timeout_s": float(layer_timeout_s)})
 
     t_engine0 = time.perf_counter()
     old_stdout = sys.stdout
     sys.stdout = io.StringIO()
     try:
-        engine = LiteEngine()
+        engine = LiteEngine(shield_cfg)
     finally:
         sys.stdout = old_stdout
     engine_init_s = time.perf_counter() - t_engine0
@@ -311,41 +461,17 @@ def run_evaluation(
                     flush=True,
                 )
 
-        scores: dict[str, float] = {}
-        for lr in result.layer_results:
-            scores[lr.layer] = lr.score
-
-        fused_score = result.risk_score
-        pred_fused = 1 if fused_score >= fused_threshold else 0
-        if y == 1 and pred_fused == 1:
-            fused_m.tp += 1
-        elif y == 0 and pred_fused == 0:
-            fused_m.tn += 1
-        elif y == 0 and pred_fused == 1:
-            fused_m.fp += 1
-        else:
-            fused_m.fn += 1
-
-        row: dict = {
-            "label": y,
-            "category": s.get("category", ""),
-            "fused_score": round(fused_score, 4),
-            "pred_fused": pred_fused,
-        }
-        for k in LAYER_KEYS:
-            sc = float(scores.get(k, 0.0))
-            pred = 1 if sc >= layer_threshold else 0
-            row[k] = round(sc, 4)
-            row[f"pred_{k}"] = pred
-            m = layer_m[k]
-            if y == 1 and pred == 1:
-                m.tp += 1
-            elif y == 0 and pred == 0:
-                m.tn += 1
-            elif y == 0 and pred == 1:
-                m.fp += 1
-            else:
-                m.fn += 1
+        row = _build_per_sample_row(
+            None,
+            y,
+            str(s.get("category", "")),
+            result,
+            layer_threshold,
+            fused_threshold,
+            include_evidence,
+        )
+        preds = _preds_from_row_dict(row)
+        _update_metrics_for_row(layer_m, fused_m, y, preds)
         per_sample_rows.append(row)
 
     engine.close()
@@ -369,8 +495,7 @@ def disagreement_stats(per_sample: list[dict]) -> dict:
 
     for row in per_sample:
         y = row["label"]
-        preds = {k: row[f"pred_{k}"] for k in LAYER_KEYS}
-        preds["fused"] = row["pred_fused"]
+        preds = _preds_from_row_dict(row)
 
         if y == 1:
             attacks_total += 1
@@ -409,6 +534,57 @@ def disagreement_stats(per_sample: list[dict]) -> dict:
     )
 
 
+_mp_engine = None
+_mp_eval_cfg: dict = {}
+
+
+def _mp_worker_init(cfg: dict) -> None:
+    global _mp_engine, _mp_eval_cfg
+    _mp_eval_cfg = cfg
+    import io as _io
+
+    _root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(_root / "src"))
+    _old = sys.stdout
+    sys.stdout = _io.StringIO()
+    try:
+        from prompt_armor.config import load_config
+        from prompt_armor.engine import LiteEngine
+
+        lt = float(_mp_eval_cfg.get("layer_timeout_s", 2.0))
+        _mp_engine = LiteEngine(load_config().model_copy(update={"layer_timeout_s": lt}))
+    finally:
+        sys.stdout = _old
+
+
+def _mp_process_chunk(chunk_arg: tuple[int, list[dict]]) -> tuple[int, list[dict], list[float]]:
+    global _mp_engine, _mp_eval_cfg
+    chunk_id, items = chunk_arg
+    cfg = _mp_eval_cfg
+    lt = float(cfg["layer_threshold"])
+    ft = float(cfg["fused_threshold"])
+    ie = bool(cfg["include_evidence"])
+    rows: list[dict] = []
+    dts: list[float] = []
+    for it in items:
+        _mp_engine.reset_session()
+        t0 = time.perf_counter()
+        result = _mp_engine.analyze(it["text"])
+        dts.append(time.perf_counter() - t0)
+        rows.append(
+            _build_per_sample_row(
+                int(it["line_idx"]),
+                int(it["label"]),
+                str(it.get("category", "")),
+                result,
+                lt,
+                ft,
+                ie,
+            )
+        )
+    return chunk_id, rows, dts
+
+
 def run_evaluation_jsonl_stream(
     path: Path,
     layer_threshold: float,
@@ -416,19 +592,13 @@ def run_evaluation_jsonl_stream(
     progress_every: int,
     max_samples: int,
     per_sample_path: Path | None,
+    workers: int = 1,
+    chunk_lines: int = 400,
+    include_evidence: bool = False,
+    layer_timeout_s: float = 2.0,
 ) -> tuple[dict[str, LayerMetrics], LayerMetrics, dict, dict]:
-    """One JSONL row at a time; metrics + disagreement online (suitable for huge files)."""
-    sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
-    from prompt_armor.engine import LiteEngine
-
-    t_engine0 = time.perf_counter()
-    old_stdout = sys.stdout
-    sys.stdout = io.StringIO()
-    try:
-        engine = LiteEngine()
-    finally:
-        sys.stdout = old_stdout
-    engine_init_s = time.perf_counter() - t_engine0
+    """Stream JSONL; optional multiprocessing (one LiteEngine per worker process)."""
+    from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 
     layer_m: dict[str, LayerMetrics] = {k: LayerMetrics(k, layer_threshold) for k in LAYER_KEYS}
     fused_m = LayerMetrics("fused_meta", fused_threshold)
@@ -438,139 +608,254 @@ def run_evaluation_jsonl_stream(
     pair_cells: defaultdict = defaultdict(lambda: defaultdict(int))
     fn_by_layer: dict[str, int] = {k: 0 for k in LAYER_KEYS}
     fp_by_layer: dict[str, int] = {k: 0 for k in LAYER_KEYS}
-    fn_fused = 0
-    fp_fused = 0
-    attacks_total = 0
-    benign_total = 0
-
-    print(
-        f"Engine ready in {engine_init_s:.2f}s (one-time setup). Active layers: {engine.active_layers}",
-        flush=True,
-    )
-    print(f"Streaming JSONL: {path}", flush=True)
+    fn_fused_box = [0]
+    fp_fused_box = [0]
+    attacks_total_box = [0]
+    benign_total_box = [0]
 
     per_fh = None
     if per_sample_path is not None:
         per_sample_path.parent.mkdir(parents=True, exist_ok=True)
         per_fh = open(per_sample_path, "w", encoding="utf-8")
-    t_loop0 = time.perf_counter()
+
+    def _flush_ready_writes(
+        completed: dict[int, tuple[list[dict], list[float]]],
+        next_write_id: list[int],
+    ) -> int:
+        """Write contiguous chunk_ids to per_fh; update metrics. Returns rows flushed."""
+        flushed = 0
+        nw = next_write_id[0]
+        while nw in completed:
+            rows, dts = completed.pop(nw)
+            analyze_seconds.extend(dts)
+            for row in rows:
+                y = int(row["label"])
+                preds = _preds_from_row_dict(row)
+                _update_metrics_for_row(layer_m, fused_m, y, preds)
+                _update_disagreement_for_row(
+                    diff_matrix,
+                    pair_cells,
+                    fn_by_layer,
+                    fp_by_layer,
+                    fn_fused_box,
+                    fp_fused_box,
+                    attacks_total_box,
+                    benign_total_box,
+                    y,
+                    preds,
+                )
+                if per_fh is not None:
+                    per_fh.write(json.dumps(row) + "\n")
+                flushed += 1
+            nw += 1
+            next_write_id[0] = nw
+        return flushed
+
     n_ok = 0
-    line_idx = 0
+    t_loop0 = time.perf_counter()
+    engine_init_s = 0.0
 
     try:
-        with open(path, encoding="utf-8") as inf:
-            for line in inf:
-                line_idx += 1
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                lab = _normalize_label(rec.get("label"))
-                if lab is None:
-                    continue
-                text = str(rec.get("text") or "").strip()
-                if not text:
-                    continue
-                category = str(rec.get("category", ""))
+        if workers <= 1:
+            sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+            from prompt_armor.config import load_config
+            from prompt_armor.engine import LiteEngine
 
-                if max_samples > 0 and n_ok >= max_samples:
-                    break
+            shield_cfg = load_config().model_copy(update={"layer_timeout_s": float(layer_timeout_s)})
 
-                engine.reset_session()
-                y = lab
-                try:
-                    t0 = time.perf_counter()
-                    result = engine.analyze(text)
-                    dt = time.perf_counter() - t0
-                    analyze_seconds.append(dt)
-                except Exception as e:
-                    print(f"  ERROR line {line_idx}: {e}", flush=True)
-                    continue
+            t_engine0 = time.perf_counter()
+            old_stdout = sys.stdout
+            sys.stdout = io.StringIO()
+            try:
+                engine = LiteEngine(shield_cfg)
+            finally:
+                sys.stdout = old_stdout
+            engine_init_s = time.perf_counter() - t_engine0
 
-                n_ok += 1
-                if progress_every > 0 and (n_ok == 1 or n_ok % progress_every == 0):
-                    avg = sum(analyze_seconds) / len(analyze_seconds)
-                    elapsed = time.perf_counter() - t_loop0
-                    print(
-                        f"  [{n_ok} lines] last={dt * 1000:.1f}ms  avg={avg * 1000:.1f}ms  elapsed={elapsed:.1f}s",
-                        flush=True,
+            print(
+                f"Engine ready in {engine_init_s:.2f}s (one-time setup). Active layers: {engine.active_layers}",
+                flush=True,
+            )
+            print(f"Streaming JSONL: {path}", flush=True)
+
+            line_idx = 0
+            last_dt = 0.0
+            with open(path, encoding="utf-8") as inf:
+                for line in inf:
+                    line_idx += 1
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    lab = _normalize_label(rec.get("label"))
+                    if lab is None:
+                        continue
+                    text = str(rec.get("text") or "").strip()
+                    if not text:
+                        continue
+                    category = str(rec.get("category", ""))
+
+                    if max_samples > 0 and n_ok >= max_samples:
+                        break
+
+                    engine.reset_session()
+                    y = lab
+                    try:
+                        t0 = time.perf_counter()
+                        result = engine.analyze(text)
+                        last_dt = time.perf_counter() - t0
+                        analyze_seconds.append(last_dt)
+                    except Exception as e:
+                        print(f"  ERROR line {line_idx}: {e}", flush=True)
+                        continue
+
+                    n_ok += 1
+                    if progress_every > 0 and (n_ok == 1 or n_ok % progress_every == 0):
+                        avg = sum(analyze_seconds) / len(analyze_seconds)
+                        elapsed = time.perf_counter() - t_loop0
+                        print(
+                            f"  [{n_ok} lines] last={last_dt * 1000:.1f}ms  avg={avg * 1000:.1f}ms  elapsed={elapsed:.1f}s",
+                            flush=True,
+                        )
+
+                    row_out = _build_per_sample_row(
+                        line_idx,
+                        y,
+                        category,
+                        result,
+                        layer_threshold,
+                        fused_threshold,
+                        include_evidence,
                     )
+                    preds = _preds_from_row_dict(row_out)
+                    _update_metrics_for_row(layer_m, fused_m, y, preds)
+                    _update_disagreement_for_row(
+                        diff_matrix,
+                        pair_cells,
+                        fn_by_layer,
+                        fp_by_layer,
+                        fn_fused_box,
+                        fp_fused_box,
+                        attacks_total_box,
+                        benign_total_box,
+                        y,
+                        preds,
+                    )
+                    if per_fh is not None:
+                        per_fh.write(json.dumps(row_out) + "\n")
 
-                scores: dict[str, float] = {}
-                for lr in result.layer_results:
-                    scores[lr.layer] = lr.score
+            engine.close()
+        else:
+            print(
+                f"Parallel stream: workers={workers} chunk_lines={chunk_lines} (one LiteEngine per worker)",
+                flush=True,
+            )
+            print(f"Streaming JSONL: {path}", flush=True)
+            print(
+                "Note: parallel mode stays quiet until the first chunk(s) finish — workers cold-start "
+                "LiteEngine (L2/L3), then run analyze() per row. With --per-sample-include-evidence that "
+                "can take many minutes before the first progress line.",
+                flush=True,
+            )
 
-                fused_score = result.risk_score
-                pred_fused = 1 if fused_score >= fused_threshold else 0
-                if y == 1 and pred_fused == 1:
-                    fused_m.tp += 1
-                elif y == 0 and pred_fused == 0:
-                    fused_m.tn += 1
-                elif y == 0 and pred_fused == 1:
-                    fused_m.fp += 1
-                else:
-                    fused_m.fn += 1
+            mp_cfg = {
+                "layer_threshold": layer_threshold,
+                "fused_threshold": fused_threshold,
+                "include_evidence": include_evidence,
+                "layer_timeout_s": float(layer_timeout_s),
+            }
+            max_in_flight = max(workers * 2, workers + 1)
+            completed_chunks: dict[int, tuple[list[dict], list[float]]] = {}
+            next_write_id = [0]
+            pending: dict = {}
+            chunk_id = 0
+            current_chunk: list[dict] = []
+            line_idx = 0
 
-                preds: dict[str, int] = {"fused": pred_fused}
-                row_out: dict = {
-                    "label": y,
-                    "category": category,
-                    "fused_score": round(fused_score, 4),
-                    "pred_fused": pred_fused,
-                }
-                for lk in LAYER_KEYS:
-                    sc = float(scores.get(lk, 0.0))
-                    pred = 1 if sc >= layer_threshold else 0
-                    preds[lk] = pred
-                    row_out[lk] = round(sc, 4)
-                    row_out[f"pred_{lk}"] = pred
-                    m = layer_m[lk]
-                    if y == 1 and pred == 1:
-                        m.tp += 1
-                    elif y == 0 and pred == 0:
-                        m.tn += 1
-                    elif y == 0 and pred == 1:
-                        m.fp += 1
-                    else:
-                        m.fn += 1
+            with ProcessPoolExecutor(max_workers=workers, initializer=_mp_worker_init, initargs=(mp_cfg,)) as ex:
+                with open(path, encoding="utf-8") as inf:
+                    for line in inf:
+                        line_idx += 1
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        lab = _normalize_label(rec.get("label"))
+                        if lab is None:
+                            continue
+                        text = str(rec.get("text") or "").strip()
+                        if not text:
+                            continue
+                        category = str(rec.get("category", ""))
 
-                if y == 1:
-                    attacks_total += 1
-                    for k in LAYER_KEYS:
-                        if preds[k] == 0:
-                            fn_by_layer[k] += 1
-                    if preds["fused"] == 0:
-                        fn_fused += 1
-                else:
-                    benign_total += 1
-                    for k in LAYER_KEYS:
-                        if preds[k] == 1:
-                            fp_by_layer[k] += 1
-                    if preds["fused"] == 1:
-                        fp_fused += 1
+                        if max_samples > 0 and n_ok >= max_samples:
+                            break
 
-                keys_list = list(preds.keys())
-                for i, a in enumerate(keys_list):
-                    for b in keys_list[i + 1 :]:
-                        if preds[a] != preds[b]:
-                            diff_matrix[a][b] += 1
-                            diff_matrix[b][a] += 1
-                        na, nb = sorted((a, b))
-                        pair_cells[(na, nb)][(preds[na], preds[nb])] += 1
+                        current_chunk.append({"line_idx": line_idx, "text": text, "label": lab, "category": category})
+                        n_ok += 1
 
-                if per_fh is not None:
-                    per_fh.write(json.dumps(row_out) + "\n")
+                        if len(current_chunk) >= chunk_lines:
+                            fut = ex.submit(_mp_process_chunk, (chunk_id, current_chunk))
+                            pending[fut] = chunk_id
+                            chunk_id += 1
+                            current_chunk = []
 
+                            while len(pending) >= max_in_flight:
+                                done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED)
+                                for fut in done:
+                                    chunk_id_done = pending.pop(fut)
+                                    try:
+                                        ret_cid, rows, dts = fut.result()
+                                    except Exception as e:
+                                        print(f"  ERROR chunk {chunk_id_done}: {e}", flush=True)
+                                        raise
+                                    completed_chunks[ret_cid] = (rows, dts)
+                                    nf = _flush_ready_writes(completed_chunks, next_write_id)
+                                    if (
+                                        progress_every > 0
+                                        and nf
+                                        and (n_ok % progress_every == 0 or nf >= progress_every)
+                                    ):
+                                        avg = sum(analyze_seconds) / max(len(analyze_seconds), 1)
+                                        elapsed = time.perf_counter() - t_loop0
+                                        print(
+                                            f"  [written~{next_write_id[0] * chunk_lines}] avg={avg * 1000:.1f}ms  elapsed={elapsed:.1f}s",
+                                            flush=True,
+                                        )
+
+                    if current_chunk:
+                        fut = ex.submit(_mp_process_chunk, (chunk_id, current_chunk))
+                        pending[fut] = chunk_id
+                        chunk_id += 1
+
+                    while pending:
+                        done, _ = wait(pending.keys(), return_when=FIRST_COMPLETED)
+                        for fut in done:
+                            pending.pop(fut)
+                            ret_cid, rows, dts = fut.result()
+                            completed_chunks[ret_cid] = (rows, dts)
+                            _flush_ready_writes(completed_chunks, next_write_id)
+
+            if progress_every > 0 and analyze_seconds:
+                avg = sum(analyze_seconds) / len(analyze_seconds)
+                print(
+                    f"  [done] n={len(analyze_seconds)} avg={avg * 1000:.1f}ms  elapsed={time.perf_counter() - t_loop0:.1f}s",
+                    flush=True,
+                )
     finally:
-        engine.close()
         if per_fh is not None:
             per_fh.close()
 
     timing = {
         "engine_init_seconds": round(engine_init_s, 3),
+        "parallel_workers": workers,
+        "chunk_lines": chunk_lines if workers > 1 else None,
         **_analyze_timing_stats(analyze_seconds),
     }
     disc = _finalize_disagreement_dict(
@@ -578,10 +863,10 @@ def run_evaluation_jsonl_stream(
         pair_cells,
         fn_by_layer,
         fp_by_layer,
-        fn_fused,
-        fp_fused,
-        attacks_total,
-        benign_total,
+        fn_fused_box[0],
+        fp_fused_box[0],
+        attacks_total_box[0],
+        benign_total_box[0],
         n_ok,
     )
     return layer_m, fused_m, timing, disc
@@ -617,6 +902,29 @@ def main() -> None:
         action="store_true",
         help="Read --dataset JSONL line-by-line (use for very large files; avoids loading all texts into RAM)",
     )
+    ap.add_argument(
+        "--per-sample-include-evidence",
+        action="store_true",
+        help="Include full fused evidence list in --per-sample JSONL (much larger files)",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="With --stream-jsonl only: parallel worker processes (each loads LiteEngine). 1 = sequential (default)",
+    )
+    ap.add_argument(
+        "--chunk-lines",
+        type=int,
+        default=400,
+        help="With --workers>1: valid JSONL rows per worker batch (default 400)",
+    )
+    ap.add_argument(
+        "--layer-timeout-s",
+        type=float,
+        default=2.0,
+        help="LiteEngine per-layer wall timeout in seconds (fail-open). Increase (e.g. 8–15) if L2 times out under --workers>1",
+    )
     args = ap.parse_args()
 
     try:
@@ -630,6 +938,15 @@ def main() -> None:
             file=sys.stderr,
         )
         raise SystemExit(1) from None
+
+    if args.workers > 1 and not args.stream_jsonl:
+        ap.error("--workers > 1 requires --stream-jsonl")
+    if args.workers < 1:
+        ap.error("--workers must be >= 1")
+    if args.chunk_lines < 1:
+        ap.error("--chunk-lines must be >= 1")
+    if not (0.5 <= args.layer_timeout_s <= 120.0):
+        ap.error("--layer-timeout-s must be between 0.5 and 120")
 
     if args.stream_jsonl:
         if args.dataset is None or args.dataset.suffix.lower() != ".jsonl":
@@ -645,6 +962,10 @@ def main() -> None:
             progress_every=args.progress_every,
             max_samples=args.max_samples,
             per_sample_path=args.per_sample,
+            workers=args.workers,
+            chunk_lines=args.chunk_lines,
+            include_evidence=args.per_sample_include_evidence,
+            layer_timeout_s=args.layer_timeout_s,
         )
         per_sample: list[dict] = []
         n_samples = disc["samples_evaluated"]
@@ -678,6 +999,8 @@ def main() -> None:
             layer_threshold=args.layer_threshold,
             fused_threshold=args.fused_threshold,
             progress_every=args.progress_every,
+            include_evidence=args.per_sample_include_evidence,
+            layer_timeout_s=args.layer_timeout_s,
         )
         disc = disagreement_stats(per_sample)
         n_samples = len(samples)
@@ -695,6 +1018,8 @@ def main() -> None:
             layer_threshold=args.layer_threshold,
             fused_threshold=args.fused_threshold,
             progress_every=args.progress_every,
+            include_evidence=args.per_sample_include_evidence,
+            layer_timeout_s=args.layer_timeout_s,
         )
         disc = disagreement_stats(per_sample)
         n_samples = len(samples)
@@ -765,6 +1090,10 @@ def main() -> None:
             "n_samples": n_samples,
             "layer_threshold": args.layer_threshold,
             "fused_threshold": args.fused_threshold,
+            "layer_timeout_s": args.layer_timeout_s,
+            "per_sample_include_evidence": args.per_sample_include_evidence,
+            "parallel_workers": args.workers,
+            "chunk_lines": args.chunk_lines if args.stream_jsonl and args.workers > 1 else None,
             "timing": timing,
             "layers": {
                 k: {

@@ -1,0 +1,28 @@
+{
+  "pair_disagreements": {
+    "l1_regex|l2_classifier": 1894,
+    "l1_regex|l3_similarity": 5921,
+    "l1_regex|l4_structural": 858,
+    "l1_regex|l5_negative_selection": 641,
+    "l2_classifier|l3_similarity": 4057,
+    "l2_classifier|l4_structural": 2444,
+    "l2_classifier|l5_negative_selection": 2385,
+    "l3_similarity|l4_structural": 5957,
+    "l3_similarity|l5_negative_selection": 6242,
+    "l4_structural|l5_negative_selection": 647
+  },
+  "solo_catch_attacks": {
+    "l1_regex": 0,
+    "l2_classifier": 3,
+    "l3_similarity": 26,
+    "l4_structural": 0,
+    "l5_negative_selection": 0
+  },
+  "layer_recall_at_t": {
+    "l1_regex": 0.21944216570959804,
+    "l2_classifier": 0.9864643150123051,
+    "l3_similarity": 0.9979491386382281,
+    "l4_structural": 0.11320754716981132,
+    "l5_negative_selection": 0.06357670221493027
+  }
+}
