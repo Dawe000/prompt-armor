@@ -9,7 +9,7 @@
 
 ## Executive summary
 
-On **327,153** rows (jayavibhav train+test style export), the fused meta-score is **strong on attack recall** at a 0.5 cut but **weak on benign precision**, matching the earlier single-threshold writeup. Offline sweeps show only a **modest** F1 gain when raising the fused threshold into the **0.66** region, at the cost of more false negatives. **`fused_confidence`** is **concentrated near 1.0**; in that mass bin the empirical attack rate is only **~0.56**, so confidence must **not** be read as calibrated probability of attack on this corpus. **L3** dominates both recall and “solo” catches at score ≥ 0.5; **L2** is the main layer that **disagrees** with L3 at scale. The three-way **`decision`** gate differs materially from legacy **`pred_fused`** at the eval threshold (many `pred_fused=1` rows land in **warn** or **allow**). A **deterministic gate grid** on `fused_score` shows how allow/warn/block **splits** would move under different `(allow_cut, block_cut)` pairs (not identical to production jitter; see §6). **§5.1** notes **L4** and **L5** have **no positive linear weight** in the shipping fusion vector (clamped from small negative coefficients), so improving those layers only affects **`fused_score`** after **retraining fusion** on new layer dumps. **§7** turns the diagnosis into a **model roadmap**, with **L3 first** for the bulk of benign false positives, then **L4/L5 + fusion**.
+On **327,153** rows (jayavibhav train+test style export), the fused meta-score is **strong on attack recall** at a 0.5 cut but **weak on benign precision**, matching the earlier single-threshold writeup. Offline sweeps show only a **modest** F1 gain when raising the fused threshold into the **0.66** region, at the cost of more false negatives. **`fused_confidence`** is **concentrated near 1.0**; in that mass bin the empirical attack rate is only **~0.56**, so confidence must **not** be read as calibrated probability of attack on this corpus. **L3** dominates both recall and “solo” catches at score ≥ 0.5; **L2** is the main layer that **disagrees** with L3 at scale. The three-way **`decision`** gate differs materially from legacy **`pred_fused`** at the eval threshold (many `pred_fused=1` rows land in **warn** or **allow**). A **deterministic gate grid** on `fused_score` shows how allow/warn/block **splits** would move under different `(allow_cut, block_cut)` pairs (not identical to production jitter; see §6). **§5.1** notes **L4** and **L5** have **no positive linear weight** in the shipping fusion vector (clamped from small negative coefficients), so improving those layers only affects **`fused_score`** after **retraining fusion** on new layer dumps. **§7** turns the diagnosis into a **model roadmap**, with **L3 first** for the bulk of benign false positives, then **L4/L5 + fusion**, and an **optional supervised tabular classifier** on a richer feature set if you need a non-embedding complement.
 
 ---
 
@@ -233,15 +233,20 @@ The benign false-alarm problem on this corpus is **largely L3-shaped**: very hig
    - **L5:** Expand or normalise statistical features, widen benign **negative-selection** training to match deployment text, tune Isolation Forest (or experiment with alternatives), so anomaly scores separate **obvious benign** from **suspicious** slices without flooding false positives.  
    - **Retrain fusion** after either layer improves: run **`scripts/dump_layer_scores.py`** then **`scripts/train_fusion.py`** so the meta-classifier can assign **non-zero** L4/L5 coefficients if the new score distributions justify it on the fusion training set. Re-check **L1×L4** interaction behaviour. Validate on the benchmark **and** this per-sample export so you do not trade jayavibhav FPs for benchmark regressions.
 
-3. **Fusion meta-classifier (global refinements)**  
+3. **Optional new supervised tabular classifier (different feature set)**  
+   - Train a **tree-based model** (e.g. histogram gradient boosting) on **labeled benign and attack** rows, not benign-only anomaly training: use **class weights** and plenty of **hard benign negatives** (high L3 / high fused false positives) so the model learns when similarity is misleading.  
+   - Build a **fresh numeric feature vector** tuned for this path: delimiter / fake chat-boundary counts, override-lexicon density, code-fence and encoding-like runs, repetition and tail-vs-head concentration of suspicious hits, non-ASCII and script-mixing stats, etc. — **complement** L3/L2 semantics and avoid duplicating only what L4 already collapses into one score unless you deliberately want a second opinion.  
+   - Ship as a **new layer score** (or a redesigned L5) in `[0, 1]`, then **retrain fusion** so the meta-classifier can weight it. Validate latency stays within product budget.
+
+4. **Fusion meta-classifier (global refinements)**  
    - Whenever any layer’s score scale or semantics changes, **re-dump** and **retrain fusion** (`scripts/dump_layer_scores.py`, `scripts/train_fusion.py`). Consider class weights or cost-sensitive objectives that penalize **benign + high fused** more than today.  
    - Explore features that encode **L2 vs L3 disagreement** more strongly if L2 remains a benign veto signal on error slices.
 
-4. **Gate and product policy (secondary to representation)**  
+5. **Gate and product policy (secondary to representation)**  
    - Use **`gate_threshold_grid.csv`** and **`decision_vs_label.csv`** to choose warn vs block friction vs misses; this can **mitigate** pain while L3 improves but will **not** fix wrong neighbours by itself.  
    - If **warn** volume is the problem, define whether warn is “review queue” or “soft block” and tune **council / uncertainty** paths (`needs_council`) against the same per-sample exports.
 
-5. **Ongoing evaluation**  
+6. **Ongoing evaluation**  
    - Run the same analyzer on **other datasets** so improvements are not overfit to jayavibhav alone.  
    - Keep a small frozen **qualitative set** (exported JSONL filters: benign + block, attack + allow) for human review before/after each L3 iteration.
 
